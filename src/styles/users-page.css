@@ -1,0 +1,92 @@
+/* ───────── src/styles/users-page.css ───────── */
+
+/* Paleta principal */
+:root {
+  --accent:       #be123c;                /* rose-600 */
+  --accent-light: rgba(244, 63, 94, .25); /* rose-500 @ 25 % */
+  --card-border:  #e5e7eb;                /* gray-200 */
+  --card-bg:      #ffffff;
+  --surface:      #f9fafb;                /* gray-50 */
+  --text-body:    #374151;                /* gray-700 */
+  --text-muted:   #6b7280;                /* gray-500 */
+}
+
+/* Escopamos TODO a .users-page ──*/
+.users-page {
+  background: var(--surface);
+  color: var(--text-body);
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* ----- Tarjeta ----- */
+.users-page .user-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 1rem;                    /* rounded-2xl */
+  box-shadow: 0 2px 6px rgba(0,0,0,.05);
+  transition: box-shadow .2s, transform .15s;
+}
+.users-page .user-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 14px rgba(0,0,0,.08);
+}
+.users-page .user-card.open {
+  box-shadow: 0 0 0 2px var(--accent-light),
+              0 10px 24px rgba(0,0,0,.12);
+}
+
+/* ----- Avatar ----- */
+.users-page .avatar-img {
+  height: 2.75rem; width: 2.75rem;
+  border-radius: 9999px;
+  object-fit: cover;
+  box-shadow: 0 0 0 2px #fff;
+}
+.users-page .avatar-fallback {
+  display: flex; align-items: center; justify-content: center;
+  height: 2.75rem; width: 2.75rem;
+  border-radius: 9999px;
+  background: var(--accent);
+  color: #fff; font-weight: 600;
+}
+
+/* ----- Switch iOS ----- */
+.users-page .switch { position: relative; display:inline-block; width:40px; height:20px; }
+.users-page .switch input { opacity:0; width:0; height:0; }
+.users-page .slider {
+  position:absolute; inset:0;
+  background:#d1d5db; border-radius:9999px; cursor:pointer;
+  transition:background .2s;
+}
+.users-page .slider::before {
+  content:""; position:absolute; left:2px; top:2px;
+  height:16px; width:16px; border-radius:9999px;
+  background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.15);
+  transition:transform .2s cubic-bezier(.4,0,.2,1);
+}
+.users-page .switch input:checked + .slider { background:var(--accent); }
+.users-page .switch input:checked + .slider::before { transform:translateX(20px); }
+
+/* ----- Chip ----- */
+.users-page .chip {
+  display:inline-flex; align-items:center; gap:.25rem;
+  padding:2px 10px; font-size:.75rem;
+  border:1px solid var(--card-border);
+  border-radius:9999px;
+  background:#f3f4f6; color:var(--text-body); cursor:pointer;
+  transition:background .15s, border-color .15s, box-shadow .15s;
+}
+.users-page .chip:hover { background:#e5e7eb; }
+.users-page .chip-active {
+  background:var(--accent); border-color:var(--accent); color:#fff;
+  box-shadow:0 0 0 2px var(--accent-light);
+}
+.users-page .chip svg { height:.75rem; width:.75rem; stroke-width:2px; }
+.users-page .chip-active svg { stroke:#fff; }
+
+/* ----- Fade-in cuerpo desplegable ----- */
+@keyframes fade-in {
+  from { opacity:0; transform:translateY(-.25rem); }
+  to   { opacity:1; transform:translateY(0); }
+}
+.users-page .fade-in { animation:fade-in .25s ease-out; }
