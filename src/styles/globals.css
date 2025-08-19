@@ -34,11 +34,15 @@ body {
 }
 
 /* Contenedor del mapa */
-.map-wrap {
-  position: fixed;
-  inset: 0;
-  height: 100vh;
+/* mapa fullscreen & iOS scroll safe */
+.map-wrap{
+  position:fixed;
+  inset:0;
+  width:100%;
+  height:100%;
 }
+html,body{ overscroll-behavior:none; }
+
 /* ---------- switch estilo iOS ---------- */
 .switch {
   @apply relative inline-block w-10 h-5 rounded-full;
@@ -60,3 +64,22 @@ input:checked + .slider::before {
 
 
 
+/* Control del pin */
+.sv-pin-ctrl.mapboxgl-ctrl-group { padding:0; }
+.sv-pin-btn{ width:34px; height:34px; display:grid; place-items:center; background:#fff; border:0; cursor:grab; }
+.sv-pin-btn:hover{ background:#f2f2f2; }
+.sv-pin-ctrl-img{ width:22px; height:22px; object-fit:contain; pointer-events:none; user-select:none; }
+.sv-pin-btn.dragging{
+  position:fixed; z-index:900; width:56px; height:56px; border-radius:50%;
+  left: calc(var(--x) - 28px); top: calc(var(--y) - 28px);
+  background:#fff; box-shadow: 0 6px 12px rgba(0,0,0,.28); pointer-events:none; cursor:grabbing;
+}
+/* Marker visible durante el drag */
+.sv-drag-marker{ width:44px; height:44px; transform: translateY(-4px); pointer-events:none; }
+.sv-drag-marker img{ width:100%; height:100%; object-fit:contain; filter: drop-shadow(0 6px 10px rgba(0,0,0,.35)); user-select:none; pointer-events:none; }
+/* Tooltip */
+.sv-pin-tip{
+  position:fixed; left: calc(var(--x) + 18px); top: calc(var(--y) - 6px);
+  background:rgba(0,0,0,.72); color:#fff; font-size:12px; padding:6px 8px; border-radius:6px;
+  pointer-events:none; z-index:901;
+}

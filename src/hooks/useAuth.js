@@ -1,24 +1,17 @@
 /**
  * src/hooks/useAuth.js
  * ------------------------------------------------------------
- * Contexto global que expone:
- *   • user     →  objeto Firebase Auth
- *   • isAdmin  →  true  si  admin:true  (claim o doc)  O  superAdmin:true
- *   • isSuper  →  true  si  superAdmin:true  (claim o doc)
- *
- * Flujo:
- *  1) Espera a que Firebase Auth detecte el usuario.
- *  2) Lee custom‑claims  →  claims.admin , claims.superAdmin
- *  3) Lee documento /usuarios/{uid}
- *  4) Combina la info y establece flags.
- *  5) Si el doc NO existe ⇒ expulsa al usuario (signOut + redirect '/').
- *
- * Nota: superAdmin implica admin automáticamente.
+ * Expone: { user, checking, isAdmin, isSuper }
+ * Reconoce admin/super por claims y por doc:
+ *   - claims.admin, claims.super, claims.superAdmin
+ *   - doc.admin, doc.super, doc.superAdmin, doc.tipo === 'administrador'
+ * Super SIEMPRE implica admin.
+ * Si el doc /usuarios/{uid} NO existe ⇒ signOut.
  * ------------------------------------------------------------
  */
 
 import { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { onAuthStateChanged, signOut, getIdTokenResult } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/auth/firebase';
 import { useRouter } from 'next/router';
@@ -27,48 +20,71 @@ const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
 export function AuthProvider({ children }) {
-  const [user, setUser]         = useState(null);
-  const [isAdmin, setAdmin]     = useState(false);
-  const [isSuper, setSuper]     = useState(false);
+  const [user, setUser]       = useState(null);
+  const [checking, setCheck]  = useState(true);
+  const [isAdmin, setAdmin]   = useState(false);
+  const [isSuper, setSuper]   = useState(false);
   const router = useRouter();
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async u => {
-      if (!u) {                            // sesión cerrada
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setCheck(true);
+
+      if (!u) {
         setUser(null);
         setAdmin(false);
         setSuper(false);
-        router.replace('/');
+        setCheck(false);
+        try { router.replace('/'); } catch (_) {}
         return;
       }
 
-      /* ───── 1. Claims ───── */
-      const { claims } = await u.getIdTokenResult(true);
-      let superFlag = !!claims.superAdmin;          // claim
-      let adminFlag = !!claims.admin || superFlag;  // super ⇒ admin
+      try {
+        // 1) Claims
+        const { claims = {} } = await getIdTokenResult(u, true);
+        let superFlag =
+          !!claims.superAdmin || !!claims.super;
+        let adminFlag =
+          !!claims.admin || superFlag;
 
-      /* ───── 2. Documento Firestore ───── */
-      const snap = await getDoc(doc(db, 'usuarios', u.uid));
-      if (!snap.exists()) {
-        alert('Usuario no autorizado');
-        await signOut(auth);
-        return;
+        // 2) Doc /usuarios/{uid}
+        const snap = await getDoc(doc(db, 'usuarios', u.uid));
+        if (!snap.exists()) {
+          alert('Usuario no autorizado');
+          await signOut(auth);
+          setCheck(false);
+          return;
+        }
+        const data = snap.data() || {};
+
+        // Acepta todas las variantes en el doc
+        if (data.superAdmin === true || data.super === true) superFlag = true;
+        if (data.admin === true || (typeof data.tipo === 'string' && data.tipo.toLowerCase() === 'administrador')) {
+          adminFlag = true;
+        }
+        // Super hereda admin
+        if (superFlag) adminFlag = true;
+
+        // 3) Estado global
+        setUser(u);
+        setSuper(!!superFlag);
+        setAdmin(!!adminFlag);
+      } catch (e) {
+        console.error('useAuth error:', e);
+        // como fallback, no marcamos admin/super
+        setUser(u);
+        setSuper(false);
+        setAdmin(false);
+      } finally {
+        setCheck(false);
       }
-      const data = snap.data();
-      if (data.superAdmin === true) superFlag = true;
-      if (data.admin === true || data.tipo === 'administrador') adminFlag = true;
-
-      /* ───── 3. Actualizar estado global ───── */
-      setUser(u);
-      setSuper(superFlag);
-      setAdmin(adminFlag || superFlag);     // super siempre hereda admin
     });
 
     return unsub;
-  }, []);
+  }, [router]);
 
   return (
-    <AuthCtx.Provider value={{ user, isAdmin, isSuper }}>
+    <AuthCtx.Provider value={{ user, checking, isAdmin, isSuper }}>
       {children}
     </AuthCtx.Provider>
   );

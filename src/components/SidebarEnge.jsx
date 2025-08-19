@@ -1,18 +1,41 @@
+/* ------------------------------------------------------------------
+ * src/components/SidebarEnge.jsx
+ * Controla apertura vía props · filtro duro por usuario
+ * - Muestra SOLO capas autorizadas (si no es admin/super).
+ * - No muestra el aviso si ya tiene capas autorizadas.
+ * - Normaliza nombres con/sin prefijo "SICDI:".
+ * - Apaga automáticamente capas activas no permitidas.
+ * ---------------------------------------------------------------- */
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter }           from 'next/navigation';
+import { useState, useEffect, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Menu, X, LogOut, Layers, MapPinned, ChevronRight, Settings,
+  X, LogOut, Layers, MapPinned, ChevronRight, Settings, ShieldAlert,
 } from 'lucide-react';
 import { signOut } from 'firebase/auth';
-import { auth }    from '@/auth/firebase';
+import { auth, db } from '@/auth/firebase';
+import { doc, onSnapshot } from 'firebase/firestore';
 
 /* ---------- utilidades ---------- */
 const FX = { type: 'tween', duration: 0.25, ease: 'easeOut' };
 const LS = 'sidebarFold';
 const cn = (...c) => c.filter(Boolean).join(' ');
+
+/* Workspace para normalizar nombres de capa */
+const WS_PREFIX = 'SICDI:';
+const norm = (n) => (n || '').replace(/^SICDI:/, '').trim();
+const makeAllowedSet = (arr = []) => {
+  const s = new Set();
+  arr.forEach((n) => {
+    const base = norm(n);
+    if (!base) return;
+    s.add(base);                  // 'SECTOR_02'
+    s.add(`${WS_PREFIX}${base}`); // 'SICDI:SECTOR_02'
+  });
+  return s;
+};
 
 const Avatar = ({ src }) => (
   <img src={src || '/user.png'} alt="avatar"
@@ -31,7 +54,7 @@ const LayerItem = ({ name, checked, onToggle, legend }) => (
         checked ? 'text-blue-600 font-medium' : 'text-gray-800',
         'truncate'
       )}>
-        {name.replace('SICDI:', '')}
+        {name.replace(/^SICDI:/, '')}
       </span>
     </span>
     <input type="checkbox" className="accent-blue-600" checked={checked} onChange={onToggle}/>
@@ -41,8 +64,7 @@ const Fold = ({ title, icon:Icon, open, onToggle, children }) => (
   <div className="border-b border-gray-200">
     <button
       onClick={onToggle}
-      className="flex w-full items-center justify-between px-5 py-2.5 text-xs font-semibold
-                 uppercase tracking-wider text-gray-600 hover:bg-gray-50">
+      className="flex w-full items-center justify-between px-5 py-2.5 text-xs font-semibold uppercase tracking-wider text-gray-600 hover:bg-gray-50">
       <span className="flex items-center gap-2"><Icon size={16}/> {title}</span>
       <motion.span animate={{ rotate: open ? 90 : 0 }} transition={{ duration:0.2 }}>
         <ChevronRight size={16}/>
@@ -50,8 +72,13 @@ const Fold = ({ title, icon:Icon, open, onToggle, children }) => (
     </button>
     <AnimatePresence initial={false}>
       {open && (
-        <motion.div initial={{height:0,opacity:0}} animate={{height:'auto',opacity:1}}
-                    exit={{height:0,opacity:0}} transition={FX} className="overflow-hidden">
+        <motion.div
+          initial={{height:0,opacity:0}}
+          animate={{height:'auto',opacity:1}}
+          exit={{height:0,opacity:0}}
+          transition={FX}
+          className="overflow-hidden"
+        >
           {children}
         </motion.div>
       )}
@@ -75,126 +102,184 @@ const StyleChips = ({ mapStyles, mapStyleActual, cambiarEstiloMapa }) => (
 
 /* ---------- Sidebar principal ---------- */
 export default function SidebarEnge({
+  /* control externo */
+  open,
+  onClose = () => {},
+
+  /* resto de props */
   user, isAdmin, isSuper,
   mapStyles, mapStyleActual, cambiarEstiloMapa,
-  capas, activas, toggleCapa,
+  capas = [], activas = [], toggleCapa,
 }) {
-  const router      = useRouter();
-  const [open, setOpen] = useState(false);
-  const [fold, setFold] = useState(()=> {
-    if (typeof window==='undefined') return {capas:true,estilos:true};
-    try { return JSON.parse(localStorage.getItem(LS)) ?? {capas:true,estilos:true}; }
-    catch { return {capas:true,estilos:true}; }
-  });
+  const router = useRouter();
 
+  /* pliegues recordados */
+  const [fold, setFold] = useState(() => {
+    if (typeof window === 'undefined') return { capas:true, estilos:true };
+    try { return JSON.parse(localStorage.getItem(LS)) ?? { capas:true, estilos:true }; }
+    catch { return { capas:true, estilos:true }; }
+  });
   const toggleFold = k => {
     const n={...fold,[k]:!fold[k]}; setFold(n);
     localStorage.setItem(LS,JSON.stringify(n));
   };
+
   const logout = async () => { await signOut(auth); router.refresh(); };
 
-  /* ESC + scroll‑lock */
-  useEffect(()=>{
-    if(!open) return;
-    const esc=e=>e.key==='Escape'&&setOpen(false);
-    const ov=document.body.style.overflow;
-    window.addEventListener('keydown',esc);
-    document.body.style.overflow='hidden';
-    return()=>{window.removeEventListener('keydown',esc);document.body.style.overflow=ov;};
-  },[open]);
+  /* permisos por usuario (Firestore) */
+  const [allowAllLayers, setAllowAllLayers] = useState(true);
+  const [allowedLayers, setAllowedLayers]   = useState([]); // array plano (sin prefijo)
+
+  useEffect(() => {
+    if (!user?.uid) { setAllowAllLayers(true); setAllowedLayers([]); return; }
+    const ref = doc(db, 'usuarios', user.uid);
+    const unsub = onSnapshot(ref, snap => {
+      const d = snap.data() || {};
+      // Solo TRUE explícito significa “todas”
+      setAllowAllLayers(d.allowAllLayers === true);
+      const arr = Array.isArray(d.allowedLayers) ? d.allowedLayers : [];
+      setAllowedLayers(arr.map(norm)); // guardamos normalizados
+    });
+    return () => unsub();
+  }, [user?.uid]);
+
+  const allowedSet = useMemo(() => makeAllowedSet(allowedLayers), [allowedLayers]);
+
+  /* Capas visibles para este usuario */
+  const capasFiltradas = useMemo(() => {
+    if (isAdmin || isSuper) return capas;
+    if (allowAllLayers === true) return capas;
+    if (!capas?.length) return [];
+    return capas.filter(c => allowedSet.has(c.name) || allowedSet.has(norm(c.name)));
+  }, [capas, isAdmin, isSuper, allowAllLayers, allowedSet]);
+
+  /* Apaga automáticamente capas activas NO permitidas cuando cambian permisos */
+  useEffect(() => {
+    if (isAdmin || isSuper) return;
+    if (allowAllLayers === true) return;
+    if (!Array.isArray(activas) || activas.length === 0) return;
+    const forbidden = activas.filter(n => !(allowedSet.has(n) || allowedSet.has(norm(n))));
+    forbidden.forEach(n => {
+      try { toggleCapa(n); } catch {}
+    });
+  }, [allowAllLayers, allowedSet, activas, isAdmin, isSuper, toggleCapa]);
+
+  /* Envuelve toggle para bloquear clics en capas no autorizadas */
+  const safeToggleCapa = (name) => {
+    if (isAdmin || isSuper || allowAllLayers === true || allowedSet.has(name) || allowedSet.has(norm(name))) {
+      toggleCapa(name);
+    } else {
+      console.warn('Capa no autorizada:', name);
+    }
+  };
+
+  /* ESC + scroll-lock */
+  useEffect(() => {
+    if (!open) return;
+    const esc = e => e.key === 'Escape' && onClose();
+    const ov  = document.body.style.overflow;
+    window.addEventListener('keydown', esc);
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', esc);
+      document.body.style.overflow = ov;
+    };
+  }, [open, onClose]);
 
   return (
-    <>
-      {/* FAB */}
-      <motion.button
-        aria-label="Panel"
-        animate={{ opacity: open ? 0 : 1, scale: open ? 0.85 : 1 }}
-        transition={FX}
-        onClick={()=>setOpen(true)}
-        className="fixed left-4 top-4 z-50 flex h-11 w-11 items-center justify-center rounded-xl
-                   bg-blue-600 text-white shadow-lg hover:bg-blue-500">
-        <Menu size={22}/>
-      </motion.button>
+    <AnimatePresence>
+      {open && (
+        <>
+          {/* backdrop */}
+          <motion.div
+            className="fixed inset-0 z-40 bg-black/40"
+            initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}
+            transition={FX} onClick={onClose}
+          />
 
-      <AnimatePresence>
-        {open && (
-          <>
-            {/* backdrop */}
-            <motion.div className="fixed inset-0 z-40 bg-black/40"
-              initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}
-              transition={FX} onClick={()=>setOpen(false)}/>
+          {/* sidebar */}
+          <motion.aside
+            className="fixed left-0 top-0 z-50 flex h-full w-80 max-w-[90%] flex-col
+                       bg-white text-gray-800 shadow-2xl"
+            initial={{x:'-100%'}} animate={{x:0}} exit={{x:'-100%'}}
+            transition={FX}
+          >
+            {/* header */}
+            <div className="flex items-center justify-between px-6 py-4 bg-blue-600 text-white">
+              <p className="text-base font-semibold">Opciones</p>
+              <button onClick={onClose}
+                      className="p-1.5 rounded hover:bg-white/20"><X size={18}/></button>
+            </div>
 
-            {/* sidebar */}
-            <motion.aside
-              className="fixed left-0 top-0 z-50 flex h-full w-80 max-w-[90%] flex-col
-                         bg-white text-gray-800 shadow-2xl"
-              initial={{x:'-100%'}} animate={{x:0}} exit={{x:'-100%'}} transition={FX}>
-
-              {/* header */}
-              <div className="flex items-center justify-between px-6 py-4 bg-blue-600 text-white">
-                <p className="text-base font-semibold">Opciones</p>
-                <button onClick={()=>setOpen(false)}
-                        className="p-1.5 rounded hover:bg-white/20"><X size={18}/></button>
+            {/* usuario */}
+            <div className="flex items-center gap-4 px-5 py-5 border-b border-gray-200">
+              <Avatar src={user?.photoURL}/>
+              <div className="flex-1">
+                <p className="text-sm font-medium truncate">{user?.displayName||'Sin nombre'}</p>
+                <p className="text-xs text-gray-500 truncate">{user?.email}</p>
               </div>
+              <button onClick={logout}
+                className="flex h-8 w-8 items-center justify-center rounded-full
+                           bg-rose-500 text-white hover:bg-rose-600">
+                <LogOut size={16}/>
+              </button>
+            </div>
 
-              {/* usuario */}
-              <div className="flex items-center gap-4 px-5 py-5 border-b border-gray-200">
-                <Avatar src={user?.photoURL}/>
-                <div className="flex-1">
-                  <p className="text-sm font-medium truncate">{user?.displayName||'Sin nombre'}</p>
-                  <p className="text-xs text-gray-500 truncate">{user?.email}</p>
-                </div>
-                <button onClick={logout}
-                  className="flex h-8 w-8 items-center justify-center rounded-full
-                             bg-rose-500 text-white hover:bg-rose-600">
-                  <LogOut size={16}/>
-                </button>
+            {/* AVISO: solo si no es admin, está restringido y AÚN no tiene capas autorizadas */}
+            {!(isAdmin || isSuper) && allowAllLayers !== true && (allowedLayers?.length ?? 0) === 0 && (
+              <div className="mx-5 mt-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <ShieldAlert className="mt-0.5 h-4 w-4" />
+                <p>Tu cuenta todavía no tiene capas autorizadas. Pide a un administrador que te asigne alguna.</p>
               </div>
+            )}
 
-              {/* Capas */}
-              <Fold title="Capas" icon={Layers} open={fold.capas}
-                    onToggle={()=>toggleFold('capas')}>
-                <div className="sidebar-scrollbar max-h-60 overflow-y-auto">
-                  {capas.length ? capas.map(c=>(
-                    <LayerItem key={c.name} name={c.name} legend={c.legend}
-                               checked={activas.includes(c.name)}
-                               onToggle={()=>toggleCapa(c.name)}/>
-                  )) : [...Array(3)].map((_,i)=>(
-                    <div key={i} className="h-4 w-full bg-gray-200 animate-pulse rounded my-1"/>
-                  ))}
-                </div>
-              </Fold>
-
-              <div className="h-6 border-t border-gray-200"/>
-
-              {/* Estilo base */}
-              <Fold title="Estilo base" icon={MapPinned}
-                    open={fold.estilos} onToggle={()=>toggleFold('estilos')}>
-                <StyleChips mapStyles={mapStyles}
-                            mapStyleActual={mapStyleActual}
-                            cambiarEstiloMapa={cambiarEstiloMapa}/>
-              </Fold>
-
-              {/* Admin */}
-              {(isAdmin || isSuper) && (
-                <Fold title="Admin" icon={Settings}
-                      open={fold.admin ?? true} onToggle={()=>toggleFold('admin')}>
-                  <div className="px-5 pb-4">
-                    <button
-                      onClick={()=>{
-                        router.push('/admin/usuarios');
-                        setOpen(false);
-                      }}
-                      className="w-full rounded-md bg-blue-600 text-white text-sm py-2 hover:bg-blue-500">
-                      Ir al dashboard
-                    </button>
+            {/* Capas */}
+            <Fold title="Capas" icon={Layers} open={fold.capas}
+                  onToggle={()=>toggleFold('capas')}>
+              <div className="sidebar-scrollbar max-h-60 overflow-y-auto">
+                {capasFiltradas.length ? capasFiltradas.map(c=>(
+                  <LayerItem key={c.name} name={c.name} legend={c.legend}
+                             checked={activas.includes(c.name)}
+                             onToggle={()=>safeToggleCapa(c.name)}/>
+                )) : (
+                  <div className="px-4 py-2 text-sm text-gray-500">
+                    {allowAllLayers === true
+                      ? 'No hay capas disponibles.'
+                      : 'No tienes capas autorizadas.'}
                   </div>
-                </Fold>
-              )}
-            </motion.aside>
-          </>
-        )}
-      </AnimatePresence>
-    </>
+                )}
+              </div>
+            </Fold>
+
+            <div className="h-6 border-t border-gray-200"/>
+
+            {/* Estilo base */}
+            <Fold title="Estilo base" icon={MapPinned}
+                  open={fold.estilos} onToggle={()=>toggleFold('estilos')}>
+              <StyleChips mapStyles={mapStyles}
+                          mapStyleActual={mapStyleActual}
+                          cambiarEstiloMapa={cambiarEstiloMapa}/>
+            </Fold>
+
+            {/* Admin */}
+            {(isAdmin || isSuper) && (
+              <Fold title="Admin" icon={Settings}
+                    open={fold.admin ?? true} onToggle={()=>toggleFold('admin')}>
+                <div className="px-5 pb-4">
+                  <button
+                    onClick={()=>{
+                      router.push('/admin/usuarios');
+                      onClose();
+                    }}
+                    className="w-full rounded-md bg-blue-600 text-white text-sm py-2 hover:bg-blue-500">
+                    Ir al dashboard
+                  </button>
+                </div>
+              </Fold>
+            )}
+          </motion.aside>
+        </>
+      )}
+    </AnimatePresence>
   );
 }

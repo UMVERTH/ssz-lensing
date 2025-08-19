@@ -1,5 +1,6 @@
 /* ---------------------------------------------------------------------------
- * GeoServerService.js  •  v7  (ago-2025)
+ * GeoServerService.js  •  v7.1  (ago-2025)
+ *  - Capabilities via proxy /api/wms/capabilities para evitar CORS/mixed content
  * ---------------------------------------------------------------------------
  */
 
@@ -7,17 +8,30 @@ const WORKSPACE = 'SICDI';
 
 /* ─ Dominio GeoServer ─ */
 const GS_BASE =
-  process.env.NEXT_PUBLIC_GEOSERVER_BASE?.replace(/\/+$/, '') ||
-  'https://geo.sic-di.com/geoserver';
+  (process.env.NEXT_PUBLIC_GEOSERVER_BASE || 'https://geo.sic-di.com/geoserver').replace(/\/+$/, '');
 const WMS_URL = `${GS_BASE}/wms`;
+
+/* Ruta proxy local (Next.js) */
+const CAPABILITIES_PROXY = '/api/wms/capabilities';
 
 /* --------------------------------------------------------------------------- */
 export async function obtenerCapasWMS() {
-  const url = `${WMS_URL}?service=WMS&version=1.3.0&request=GetCapabilities`;
-  const xml = new DOMParser().parseFromString(
-    await fetch(url).then((r) => r.text()),
-    'text/xml'
-  );
+  // 1) intenta por el proxy
+  let xmlText;
+  try {
+    const res = await fetch(CAPABILITIES_PROXY, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`Proxy error ${res.status}`);
+    xmlText = await res.text();
+  } catch (e) {
+    // 2) fallback directo (puede fallar por CORS si estás en navegador)
+    console.warn('[GeoServerService] Proxy falló, intento directo:', e?.message);
+    const direct = `${WMS_URL}?service=WMS&version=1.3.0&request=GetCapabilities`;
+    const r2 = await fetch(direct);
+    if (!r2.ok) throw new Error(`GeoServer error ${r2.status}`);
+    xmlText = await r2.text();
+  }
+
+  const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
 
   return Array.from(xml.querySelectorAll('Layer > Layer'))
     .map((l) => {
@@ -68,7 +82,7 @@ export function getFeatureInfoURL({
   map,
   fmt = 'application/json',
   featureCount = 5,
-  tolerancePX = 15, // amplia tolerancia
+  tolerancePX = 15,
 }) {
   const [sw, ne] = map.getBounds().toArray();
   const bbox = [...sw, ...ne].join(',');
@@ -89,7 +103,7 @@ export function getFeatureInfoURL({
     y: Math.round(y),
     info_format: fmt,
     feature_count: featureCount,
-    buffer: tolerancePX, // parámetro que GeoServer sí respeta
+    buffer: tolerancePX,
   });
 
   return `${WMS_URL}?${p}`;
